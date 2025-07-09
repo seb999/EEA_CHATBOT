@@ -14,14 +14,73 @@ function App() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatGptMessages]);
 
-  const handleNewPrompt = () => {
+  const handleNewPrompt = async () => {
     if (!input.trim()) return;
 
+    // Step 1: Add user message to the prompt
     const updatedHistory: ChatGptMessage[] = [
       ...chatGptMessages,
       { role: "user", content: input },
     ];
     setChatGptMessages(updatedHistory);
+
+    // Step 2: Send full history to the backend
+    const response = await fetch('/chat', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ prompt: updatedHistory }),
+    });
+
+    if (!response.ok || !response.body) {
+      console.error("Stream failed");
+      return;
+    }
+
+    // Step 3: Stream assistant response
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    let assistantContent = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      const chunks = buffer.split("\n");
+      buffer = chunks.pop() || "";
+
+      for (const chunk of chunks) {
+        if (chunk.startsWith("data:")) {
+          const json = chunk.replace("data:", "").replace("null", "").trim();
+          try {
+            const parsed = JSON.parse(json);
+            const chunkText = parsed.content;
+
+            assistantContent += chunkText;
+
+            // Optional: show streaming in progress (overwrite last assistant message)
+            setChatGptMessages(prev => {
+              const temp = [...prev];
+              const last = temp[temp.length - 1];
+              if (last?.role === "assistant") {
+                temp[temp.length - 1] = {
+                  ...last,
+                  content: assistantContent
+                };
+              } else {
+                temp.push({ role: "assistant", content: assistantContent });
+              }
+              return temp;
+            });
+          } catch (err) {
+            console.error("Failed to parse JSON chunk:", json, err);
+          }
+        }
+      }
+    }
     setInput("");
   };
 
@@ -30,8 +89,8 @@ function App() {
       {/* Messages Area */}
       <div
         className={`flex-grow ${chatGptMessages.length === 0
-            ? "flex items-center justify-center"
-            : "overflow-y-auto"
+          ? "flex items-center justify-center"
+          : "overflow-y-auto"
           }`}
         style={{ padding: chatGptMessages.length === 0 ? 0 : "1rem" }}
       >
@@ -74,19 +133,17 @@ function App() {
             {chatGptMessages.map((m, index) => (
               <div
                 key={index}
-                className={`whitespace-pre-wrap flex ${m.role === "user" ? "justify-end" : "justify-start"
-                  }`}
+                className={`w-full flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
               >
                 <div
-                  className={`p-3 rounded-lg shadow ${m.role === "user"
-                      ? "bg-blue-100 text-black max-w-md"
-                      : "text-black w-full"
-                    }`}
+                  className={`p-3 rounded-lg shadow whitespace-pre-wrap max-w-md
+                   ${m.role === "user" ? "bg-blue-100 text-black" : "bg-gray-100 text-black"}`}
                 >
                   <span>{m.content}</span>
                 </div>
               </div>
             ))}
+
             <div ref={bottomRef} />
           </div>
         )}
